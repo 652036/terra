@@ -1,0 +1,16 @@
+{
+  "name": "TERRA",
+  "short_name": "TERRA",
+  "description": "Cinematic Earth globe for human-agent exploration with WebMCP.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#071018",
+  "theme_color": "#071018",
+  "icons": [
+    {
+      "src": "./assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
