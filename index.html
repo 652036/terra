@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'">
+  <meta name="theme-color" content="#071018">
+  <title>TERRA · WebMCP globe</title>
+  <meta name="description" content="A cinematic Earth globe where a person and an agent explore the same live scene through WebMCP tools.">
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip" href="#main-content">Skip to globe</a>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">WebMCP Challenge</p>
+      <h1 id="workspace-title">TERRA briefing</h1>
+    </div>
+    <div class="status-cluster">
+      <p id="webmcp-status" data-mode="preview">Checking WebMCP…</p>
+      <p id="published-flag" hidden>Published · mutation tools locked</p>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <section class="globe-panel" data-focus="globe">
+      <div class="panel-head">
+        <h2>Shared globe</h2>
+        <p id="camera-readout">Tokyo · Japan</p>
+      </div>
+      <div id="globe-stage" data-night="true" data-atmosphere="on" data-grid="off">
+        <div class="cosmos"></div>
+        <div class="atmosphere"></div>
+        <div class="sphere">
+          <div class="ocean"></div>
+          <div class="terminator"></div>
+          <div id="place-dots"></div>
+        </div>
+      </div>
+      <label class="time-control">
+        Visualization hour
+        <input id="time-slider" type="range" min="0" max="23" value="21">
+        <span id="time-readout">21:00</span>
+      </label>
+    </section>
+
+    <aside class="board">
+      <section data-focus="pins">
+        <h2>Places</h2>
+        <ul id="place-list"></ul>
+        <h3>Pins</h3>
+        <ul id="pin-list"></ul>
+      </section>
+      <section data-focus="compare">
+        <h2>Comparisons</h2>
+        <ul id="compare-panel"></ul>
+      </section>
+      <section data-focus="measure">
+        <h2>Measurements</h2>
+        <ul id="measure-panel"></ul>
+      </section>
+      <section data-focus="layers">
+        <h2>Layers</h2>
+        <div id="layer-list"></div>
+      </section>
+    </aside>
+
+    <section class="ops" data-focus="tools">
+      <div class="human-gate">
+        <h2>Human gate</h2>
+        <p>The agent can fly, pin, compare, measure, and stage a brief. Only a person can publish it.</p>
+        <div class="actions">
+          <button id="example-scene" type="button">Load example</button>
+          <button id="reset-scene" type="button">Reset</button>
+          <button id="publish-brief" type="button">Publish briefing</button>
+          <button id="reopen-scene" type="button" hidden>Reopen scene</button>
+        </div>
+      </div>
+
+      <div id="staged-review" data-focus="brief" hidden>
+        <h2>Staged brief</h2>
+        <p data-role="headline"></p>
+        <p data-role="body"></p>
+      </div>
+
+      <form id="tool-form">
+        <h2>Tool Lab</h2>
+        <p>Use this when native WebMCP is unavailable. Same schemas, same shared state.</p>
+        <label>Tool
+          <select id="tool-select"></select>
+        </label>
+        <label>JSON input
+          <textarea id="tool-input" rows="6" placeholder='{"placeId":"tokyo"}'></textarea>
+        </label>
+        <button type="submit">Execute</button>
+        <pre id="tool-output">Ready.</pre>
+      </form>
+
+      <section>
+        <h2>Activity</h2>
+        <ul id="activity-list"></ul>
+      </section>
+    </section>
+  </main>
+
+  <footer>
+    <p>TERRA keeps the person and the agent on the same globe. No remote network, no model key, no publish tool for agents.</p>
+  </footer>
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>
