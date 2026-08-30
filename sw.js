@@ -1,14 +1,47 @@
-const CACHE = 'terra-v1';
-const ASSETS = ['./', './index.html', './styles.css', './src/app.js', './src/data.js', './src/engine.js', './src/webmcp.js', './manifest.webmanifest', './assets/icon.svg'];
+const CACHE = 'terra-v3';
+const ASSETS = [
+  './',
+  './index.html',
+  './styles.css',
+  './src/app.js',
+  './src/data.js',
+  './src/engine.js',
+  './src/globe.js',
+  './src/output.js',
+  './src/state.js',
+  './src/webmcp.js',
+  './manifest.webmanifest',
+  './assets/icon.svg',
+  './assets/earth-texture.svg',
+];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))));
+  event.waitUntil(Promise.all([
+    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))),
+    self.clients.claim(),
+  ]));
 });
 
 self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
+  const url = new URL(event.request.url);
+  const sameOrigin = url.origin === self.location.origin;
+  const networkFirst = sameOrigin && (
+    event.request.mode === 'navigate' ||
+    url.pathname.endsWith('/index.html') ||
+    url.pathname.endsWith('/styles.css') ||
+    url.pathname.includes('/src/')
+  );
+  if (networkFirst) {
+    event.respondWith(fetch(event.request).then((response) => {
+      if (response.ok) caches.open(CACHE).then((cache) => cache.put(event.request, response.clone()));
+      return response;
+    }).catch(() => caches.match(event.request)));
+    return;
+  }
   event.respondWith(caches.match(event.request).then((cached) => cached || fetch(event.request)));
 });

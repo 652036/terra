@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
   <meta name="theme-color" content="#071018">
   <title>TERRA · WebMCP globe</title>
   <meta name="description" content="A cinematic Earth globe where a person and an agent explore the same live scene through WebMCP tools.">
@@ -19,8 +19,8 @@
       <h1 id="workspace-title">TERRA briefing</h1>
     </div>
     <div class="status-cluster">
-      <p id="webmcp-status" data-mode="preview">Checking WebMCP…</p>
-      <p id="published-flag" hidden>Published · mutation tools locked</p>
+      <p id="webmcp-status" data-mode="preview" role="status" aria-live="polite">Checking WebMCP…</p>
+      <p id="published-flag" role="status" hidden>Published · mutation tools locked</p>
     </div>
   </header>
 
@@ -30,19 +30,22 @@
         <h2>Shared globe</h2>
         <p id="camera-readout">Tokyo · Japan</p>
       </div>
-      <div id="globe-stage" data-night="true" data-atmosphere="on" data-grid="off">
+      <div id="globe-stage" data-night="true" data-atmosphere="on" data-grid="off" aria-describedby="globe-help">
         <div class="cosmos"></div>
         <div class="atmosphere"></div>
-        <div class="sphere">
+        <canvas id="globe-canvas" tabindex="0" role="img" aria-label="Interactive 3D Earth centered on Tokyo. Drag to rotate, use arrow keys to pan, and use the mouse wheel to zoom."></canvas>
+        <div class="sphere fallback-globe" aria-hidden="true">
           <div class="ocean"></div>
           <div class="terminator"></div>
-          <div id="place-dots"></div>
         </div>
+        <svg id="place-dots" aria-label="Visible catalog places"></svg>
+        <div class="globe-hud" aria-hidden="true"><span>DRAG TO ORBIT</span><span id="zoom-readout">1.00×</span></div>
       </div>
+      <p id="globe-help" class="interaction-help">Drag to rotate · scroll to zoom · arrow keys also work</p>
       <label class="time-control">
         Visualization hour
-        <input id="time-slider" type="range" min="0" max="23" value="21">
-        <span id="time-readout">21:00</span>
+        <input id="time-slider" type="range" min="0" max="23" value="21" aria-describedby="time-readout">
+        <output id="time-readout" for="time-slider">21:00</output>
       </label>
     </section>
 
@@ -69,14 +72,22 @@
 
     <section class="ops" data-focus="tools">
       <div class="human-gate">
-        <h2>Human gate</h2>
-        <p>The agent can fly, pin, compare, measure, and stage a brief. Only a person can publish it.</p>
+        <p class="eyebrow">Protected action</p>
+        <h2>Visible publish gate</h2>
+        <p>Site tools can explore and stage a draft. Finalization is absent from the tool registry and requires explicit confirmation here.</p>
         <div class="actions">
           <button id="example-scene" type="button">Load example</button>
           <button id="reset-scene" type="button">Reset</button>
-          <button id="publish-brief" type="button">Publish briefing</button>
+          <button id="publish-brief" class="primary" type="button">Review &amp; publish</button>
           <button id="reopen-scene" type="button" hidden>Reopen scene</button>
         </div>
+      </div>
+
+      <div class="demo-prompt">
+        <p class="eyebrow">Try with an agent</p>
+        <h2>Pacific corridor briefing</h2>
+        <p id="demo-prompt-text">Fly to Tokyo, compare it with Vancouver, measure their great-circle distance and initial bearing, set the visualization hour to 22:00, pin Tokyo as “Primary focus” and Vancouver as “Pacific counterpart,” and stage a concise briefing. Do not publish.</p>
+        <button id="copy-prompt" type="button">Copy demo prompt</button>
       </div>
 
       <div id="staged-review" data-focus="brief" hidden>
@@ -85,9 +96,9 @@
         <p data-role="body"></p>
       </div>
 
-      <form id="tool-form">
+      <form id="tool-form" autocomplete="off">
         <h2>Tool Lab</h2>
-        <p>Use this when native WebMCP is unavailable. Same schemas, same shared state.</p>
+        <p>Local fallback for browsers without WebMCP. It runs the same schemas and shared-state handlers.</p>
         <label>Tool
           <select id="tool-select"></select>
         </label>
@@ -95,19 +106,35 @@
           <textarea id="tool-input" rows="6" placeholder='{"placeId":"tokyo"}'></textarea>
         </label>
         <button type="submit">Execute</button>
-        <pre id="tool-output">Ready.</pre>
+        <pre id="tool-output" role="status" aria-live="polite">Ready.</pre>
       </form>
 
       <section>
         <h2>Activity</h2>
-        <ul id="activity-list"></ul>
+        <ul id="activity-list" aria-live="polite"></ul>
       </section>
     </section>
   </main>
 
   <footer>
-    <p>TERRA keeps the person and the agent on the same globe. No remote network, no model key, no publish tool for agents.</p>
+    <p>TERRA keeps the person and the agent on one inspectable globe. No remote network, model key, tracking, or agent publish tool.</p>
   </footer>
+
+  <dialog id="publish-dialog" aria-labelledby="publish-title">
+    <form method="dialog">
+      <p class="eyebrow">Visible user checkpoint</p>
+      <h2 id="publish-title">Review before publishing</h2>
+      <div id="publish-summary"></div>
+      <label class="review-check">
+        <input id="review-confirm" type="checkbox">
+        I reviewed the staged content and visible scene.
+      </label>
+      <div class="actions dialog-actions">
+        <button value="cancel" type="submit">Keep editing</button>
+        <button id="confirm-publish" class="primary" value="confirm" type="submit" disabled>Publish this snapshot</button>
+      </div>
+    </form>
+  </dialog>
   <script type="module" src="./src/app.js"></script>
 </body>
 </html>

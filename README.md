@@ -1,62 +1,108 @@
 # TERRA
 
-**A cinematic Earth globe for human–agent exploration, built for WebMCP.**
-
-TERRA turns a browser page into a shared planet. A person and an agent look at the same night-side lights, fly to the same city, drop the same pins, compare the same places, and stage the same briefing. The agent can explore. Only the human can publish.
-
-> Same globe. Shared tools. Human publish gate.
+**A shared 3D planet for human–agent exploration, built natively for WebMCP.**
 
 [![CI](https://github.com/652036/terra/actions/workflows/ci.yml/badge.svg)](https://github.com/652036/terra/actions/workflows/ci.yml)
 [![Deploy](https://github.com/652036/terra/actions/workflows/pages.yml/badge.svg)](https://github.com/652036/terra/actions/workflows/pages.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-9bb8d4.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-75d6cb.svg)](LICENSE)
 
-## Why this is a WebMCP app
+TERRA turns a browser page into an inspectable geographic briefing room. A person and an agent orbit the same globe, move the same day/night terminator, select the same stable place ids, drop the same pins, and build the same comparison board. WebMCP site tools can explore and stage a draft; finalizing the local briefing snapshot is reserved for a visible review control and explicit user confirmation.
 
-A globe is a terrible thing to scrape. City labels overlap, the camera is stateful, day/night is a slider, and a screenshot cannot tell an agent which pin is `pin-tokyo`. WebMCP lets the site publish the actual actions:
+> Same globe. Shared state. Human publish gate.
+
+## The problem
+
+A visual workspace is hostile to DOM guessing. City labels overlap. A camera has orientation and zoom. A screenshot cannot identify whether a glowing dot is Tokyo or `pin-tokyo`. Time and layer changes alter what the person sees without necessarily changing page text.
+
+WebMCP gives the open page a structured, state-aware interface. Instead of automating coordinates or scraping pixels, an agent can call one bounded action and then verify the exact scene revision the person is watching.
+
+## What the experience includes
+
+- A real native WebGL sphere with an offline Earth texture, shader-driven daylight, night shading, atmosphere, and graticule.
+- Pointer/touch orbit, wheel zoom, arrow-key camera control, catalog navigation, time control, and five visual layers.
+- Stable pins, pairwise great-circle distance and bearing, multi-place comparison, staged briefing review, Markdown export, and bounded undo.
+- One normalized scene shared by manual controls, WebMCP tools, rendering, persistence, and state receipts.
+- Fifteen tools while drafting; exactly five inspection/navigation tools after a human publishes.
+- No backend, model key, map-tile provider, analytics, runtime dependency, or external network call.
+
+## Why this is WebMCP-native
+
+The useful capability exists inside the live page: move a canvas camera, update visual layers, annotate what the person sees, and keep the result inspectable. A remote MCP server cannot by itself guarantee that its idea of “Tokyo at 22:00” matches the currently open globe.
+
+TERRA registers the imperative tools directly on `document.modelContext`:
 
 ```js
-document.modelContext.registerTool({
+await document.modelContext.registerTool({
   name: 'terra_fly_to',
-  description: 'Fly the shared globe camera to a catalog place so the human can watch the same destination.',
-  inputSchema: { type: 'object', additionalProperties: false, required: ['placeId'], properties: { placeId: { type: 'string' } } },
-  execute: async (input) => { /* update the visible camera */ },
-});
+  description: 'Move the shared 3D globe camera to one catalog place.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['placeId'],
+    properties: { placeId: { type: 'string', pattern: '^[a-z0-9-]+$' } },
+  },
+  annotations: { readOnlyHint: false },
+  execute: async ({ placeId }, { signal }) => {
+    // Validate, mutate the visible scene, render, and return a revisioned receipt.
+  },
+}, { signal: registrationController.signal });
 ```
 
-- The agent receives stable place ids instead of guessing at dots.
-- Every mutation updates the same globe the person is watching.
-- Time, layers, pins, comparisons, and measurements stay inspectable.
-- The agent may stage a briefing. There is no `terra_publish` tool.
-- After a human publishes, mutation tools unregister.
+Registrations are awaited. Every registration set shares an `AbortSignal`; publishing or reconnecting aborts the old set before the new set is installed. Invocation cancellation is forwarded to handlers. If native WebMCP is unavailable, the visible Tool Lab runs the same schemas and handler functions for inspection—it is a fallback, not a simulated second implementation.
 
-## WebMCP tools
+## Tool surface
 
-Always available:
+### Always available — 5 tools
 
-| Tool | Purpose |
+| Tool | Visible job |
 | --- | --- |
-| `terra_read_scene` | Read camera, time, layers, pins, comparisons, and publish state |
-| `terra_list_places` | List the built-in geographic catalog |
-| `terra_search_place` | Search by city, country, climate, or note |
-| `terra_export_markdown` | Export the briefing without publishing it |
-| `terra_focus_view` | Bring a panel into the human viewport |
+| `terra_read_scene` | Read a compact summary, then page complete pins, comparisons, measurements, or staged draft by stable revision |
+| `terra_list_places` | Page through the trusted local catalog and stable ids |
+| `terra_search_place` | Search by id, city, country, climate, or note |
+| `terra_export_markdown` | Read bounded Markdown chunks with an export id and continuation offset |
+| `terra_focus_view` | Bring one existing panel into the person’s viewport |
 
-Available while the scene is unpublished:
+### Draft-only — 10 tools
 
-| Tool | Purpose |
+| Tool | Visible job |
 | --- | --- |
-| `terra_fly_to` | Move the shared camera to a catalog place |
-| `terra_drop_pin` / `terra_remove_pin` | Annotate the globe |
-| `terra_compare_places` | Compare two or more cities on the board |
-| `terra_measure_distance` | Great-circle distance and bearing |
-| `terra_set_time` | Set the 0–23 visualization hour |
-| `terra_toggle_layer` | Labels, city lights, atmosphere, grid, pins |
-| `terra_stage_brief` / `terra_clear_staged_brief` | Prepare a human-reviewed briefing |
-| `terra_undo_last_change` | Undo the latest reversible mutation |
+| `terra_fly_to` | Rotate the shared camera to a catalog place |
+| `terra_drop_pin` | Add a labeled place pin |
+| `terra_remove_pin` | Remove a pin by stable id; undo remains available |
+| `terra_compare_places` | Compare 2–5 distinct places on the board |
+| `terra_measure_distance` | Add a great-circle distance and initial bearing |
+| `terra_set_time` | Move the 0–23 hour daylight and city-light state |
+| `terra_toggle_layer` | Toggle labels, lights, atmosphere, grid, or pins |
+| `terra_stage_brief` | Put untrusted draft text into the human review panel |
+| `terra_clear_staged_brief` | Clear that draft without publishing |
+| `terra_undo_last_change` | Undo the current agent-authored change with an exact expected revision; never cross a newer user edit |
 
-There is deliberately no publish, commit, or finalize tool.
+Tool parameters use strict JSON Schema: unknown properties are rejected; text, ids, arrays, numeric ranges, enums, and uniqueness are bounded. Tools use the current WebMCP `readOnlyHint` and `untrustedContentHint` annotations as appropriate. Native handlers return one direct object—there is no duplicated text/structured payload. `terra_read_scene` defaults to a compact summary and pages at most one full record; Markdown export returns at most 2,000 characters per call. Continuations carry the same revision or export id so complete content remains retrievable without one oversized response.
+
+## The local publish boundary
+
+“Publish” in TERRA means freezing a reviewed local snapshot; it does not upload or share data. There is deliberately no `terra_publish`, commit, finalize, confirm-dialog, or reopen tool.
+
+1. The agent stages content in the visible review panel.
+2. The person clicks **Review & publish**.
+3. A modal summarizes the camera, time, pins, comparisons, measurements, and draft headline.
+4. The final action stays disabled until the person checks a review acknowledgment.
+5. Publishing freezes manual mutation controls, aborts all ten mutation registrations, and leaves the five inspection tools.
+6. Reopening also remains a visible UI control and is absent from the site-tool surface.
+
+This is a capability boundary in the registered WebMCP interface, not a prompt asking the agent to behave. It does not claim to block a separate, general-purpose browser automation system from operating visible page controls.
+
+## Try the full workflow
+
+Use the copyable prompt shown in the app:
+
+> Fly to Tokyo, compare it with Vancouver, measure their great-circle distance and initial bearing, set the visualization hour to 22:00, pin Tokyo as “Primary focus” and Vancouver as “Pacific counterpart,” and stage a concise briefing. Do not publish.
+
+Finish with the default `terra_read_scene` summary and compare its revision, camera, time, layers, and counts with the visible interface. Request a named section and follow `nextOffset` when complete record content is needed. Then use the human review dialog and verify that the WebMCP badge changes from **15 tools** to **5 tools**.
 
 ## Run locally
+
+Requirements: Node.js 22 or newer.
 
 ```bash
 git clone https://github.com/652036/terra.git
@@ -65,9 +111,14 @@ npm ci
 npm run dev
 ```
 
-Open `http://127.0.0.1:4175`.
+Open `http://127.0.0.1:4175`. The local server explicitly sends the origin-isolation and permissions-policy headers used by the production deployment:
 
-The local server sends `Origin-Agent-Cluster: ?1` and `Permissions-Policy: tools=(self)`. In Chrome, enable `chrome://flags/#enable-webmcp-testing`. In an ordinary browser, TERRA falls back to the built-in Tool Lab:
+```text
+Origin-Agent-Cluster: ?1
+Permissions-Policy: tools=(self)
+```
+
+Use ChatGPT’s in-app browser or Chrome 149+ with WebMCP enabled. In a browser without native support, open Tool Lab or use the console:
 
 ```js
 window.__terraWebMCP.listTools();
@@ -78,23 +129,35 @@ window.__terraWebMCP.status();
 ## Verify and build
 
 ```bash
-npm run verify
-npm run build
+npm run verify   # static contract checks + automated test suite
+npm run build    # dependency-free static output in dist/
 ```
 
-## Challenge materials
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md)
-- [`docs/DEVPOST_SUBMISSION.md`](docs/DEVPOST_SUBMISSION.md)
-- [`SECURITY.md`](SECURITY.md)
+Tests cover geographic calculations, far-hemisphere projection, sphere geometry, schema rejection, direct Site-tool results, bounded/paged output reconstruction, state normalization, collision-safe ids, user-aware undo, awaited native registration, failure cleanup, and AbortSignal-based reconnection. CI runs verification and builds the exact deployable artifact.
 
 ## Deployment
 
-Set **Settings → Pages → Build and deployment → Source** to **GitHub Actions** once.
+Production WebMCP URL: <https://terra-globe.st2p8g4tkf.chatgpt.site/>
 
-Expected URL: `https://652036.github.io/terra/`
+The production configuration explicitly sends the two headers above. `netlify.toml` and `public/_headers` configure them for Netlify and compatible static hosts; `.openai/hosting.json` points ChatGPT Sites at `dist/`.
 
-## License
+The included GitHub Pages workflow provides a convenient visual/PWA preview, but GitHub Pages does not honor a repository `_headers` file. Use the production URL above for judging, and verify the top-right badge says **Native WebMCP**, not **Tool Lab**.
 
-MIT
+## Safety, privacy, and accessibility
+
+- User-authored pin and briefing text is marked untrusted and rendered with escaping or `textContent`.
+- `localStorage` input is normalized before use; invalid shapes, ids, ranges, and collection sizes are discarded or clamped.
+- A restrictive CSP allows only local scripts, styles, images, connections, and workers.
+- TERRA has no first-party backend, tracking, or telemetry. Draft persistence remains in `localStorage`; when a person or agent invokes a read/export site tool, the requested scene page is returned to that invoking agent.
+- The responsive interface supports phone layouts, touch, keyboard camera controls, visible focus, live status, skip navigation, reduced motion, forced colors, and a WebGL fallback.
+
+See [SECURITY.md](SECURITY.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full trust and lifecycle design.
+
+## Challenge materials
+
+- [Architecture and WebMCP lifecycle](docs/ARCHITECTURE.md)
+- [Under-three-minute demo script](docs/DEMO_SCRIPT.md)
+- [Devpost submission draft](docs/DEVPOST_SUBMISSION.md)
+- [Security model](SECURITY.md)
+
+TERRA is released under the [MIT License](LICENSE).

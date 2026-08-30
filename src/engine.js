@@ -33,12 +33,15 @@ export function bearingDegrees(a, b) {
   const x =
     Math.cos(toRad(a.lat)) * Math.sin(toRad(b.lat)) -
     Math.sin(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.cos(toRad(b.lon - a.lon));
-  return (Math.atan2(y, x) * 180) / Math.PI;
+  return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360;
 }
 
 export function comparePlaces(ids) {
-  const places = ids.map(getPlace).filter(Boolean);
-  if (places.length < 2) throw new Error('Compare at least two known place ids.');
+  const uniqueIds = [...new Set(ids)];
+  const places = uniqueIds.map(getPlace);
+  const missing = uniqueIds.filter((_, index) => !places[index]);
+  if (missing.length) throw new Error(`Unknown place id(s): ${missing.join(', ')}.`);
+  if (places.length < 2) throw new Error('Compare at least two distinct, known place ids.');
   const pairs = [];
   for (let i = 0; i < places.length; i += 1) {
     for (let j = i + 1; j < places.length; j += 1) {
@@ -66,15 +69,29 @@ export function comparePlaces(ids) {
 }
 
 export function projectPoint(lat, lon, camera) {
-  const relLon = lon - camera.lon;
-  const x = ((relLon + 540) % 360) - 180;
-  const y = camera.lat - lat;
-  return { x, y, visible: Math.abs(x) < 95 && Math.abs(y) < 80 };
+  const toRad = (degrees) => (degrees * Math.PI) / 180;
+  const latitude = toRad(lat);
+  const cameraLatitude = toRad(camera.lat);
+  const longitudeDelta = toRad(((lon - camera.lon + 540) % 360) - 180);
+  const cosLatitude = Math.cos(latitude);
+  const cosCameraLatitude = Math.cos(cameraLatitude);
+  const sinCameraLatitude = Math.sin(cameraLatitude);
+  const depth =
+    sinCameraLatitude * Math.sin(latitude) +
+    cosCameraLatitude * cosLatitude * Math.cos(longitudeDelta);
+  return {
+    x: cosLatitude * Math.sin(longitudeDelta),
+    y:
+      -(cosCameraLatitude * Math.sin(latitude) -
+        sinCameraLatitude * cosLatitude * Math.cos(longitudeDelta)),
+    depth,
+    visible: depth > 0.015,
+  };
 }
 
 export function sunlit(lon, hour) {
   const sunLon = (12 - hour) * 15;
-  let delta = ((lon - sunLon + 540) % 360) - 180;
+  const delta = ((lon - sunLon + 540) % 360) - 180;
   return Math.abs(delta) < 90;
 }
 
@@ -84,7 +101,7 @@ export function exportMarkdown(scene) {
     `# ${scene.title}`,
     '',
     `- Camera: ${cameraPlace ? cameraPlace.name : `${scene.camera.lat}, ${scene.camera.lon}`}`,
-    `- Local visualization hour: ${String(scene.time).padStart(2, '0')}:00`,
+    `- Visualization hour: ${String(scene.time).padStart(2, '0')}:00`,
     `- Layers: ${Object.entries(scene.layers).filter(([, on]) => on).map(([id]) => id).join(', ') || 'none'}`,
     `- Pins: ${scene.pins.length}`,
     '',
@@ -101,7 +118,9 @@ export function exportMarkdown(scene) {
     '',
     scene.stagedBrief ? `## Staged brief\n\n${scene.stagedBrief.headline}\n\n${scene.stagedBrief.body}` : '## Staged brief\n\nNone',
     '',
-    scene.published ? 'Status: published by a human.' : 'Status: draft. Human publish gate is still open.',
+    scene.published
+      ? 'Status: local snapshot finalized through visible user review.'
+      : 'Status: local draft. Visible publish review is still open.',
   ];
   return lines.join('\n');
 }
