@@ -36,6 +36,8 @@ const server = createServer((request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Origin-Agent-Cluster', '?1');
     response.setHeader('Permissions-Policy', 'tools=(self)');
+    response.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    response.setHeader('X-Frame-Options', 'DENY');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Referrer-Policy', 'no-referrer');
     createReadStream(filePath)

@@ -17,6 +17,31 @@ export function getPlace(id) {
   return PLACES.find((place) => place.id === id) ?? null;
 }
 
+export function resolvePlace(value) {
+  if (typeof value !== 'string') return null;
+  const needle = value.trim().toLowerCase();
+  if (!needle) return null;
+  return PLACES.find((place) => place.id === needle || place.name.toLowerCase() === needle) ?? null;
+}
+
+export function placeIdList() {
+  return PLACES.map((place) => place.id).join(', ');
+}
+
+export function unknownPlaceMessage(value) {
+  return `Unknown place "${String(value)}". Valid ids: ${placeIdList()}. City names such as "New York" are also accepted; call terra_find_places to search.`;
+}
+
+export function requirePlace(value) {
+  const place = resolvePlace(value);
+  if (!place) throw new Error(unknownPlaceMessage(value));
+  return place;
+}
+
+export function catalogEntry({ id, name, country, lat, lon, utcOffset, population, climate, note }) {
+  return { id, name, country, lat, lon, utcOffset, populationMillions: population, climate, note };
+}
+
 export function haversineKm(a, b) {
   const toRad = (deg) => (deg * Math.PI) / 180;
   const dLat = toRad(b.lat - a.lat);
@@ -37,11 +62,18 @@ export function bearingDegrees(a, b) {
 }
 
 export function comparePlaces(ids) {
-  const uniqueIds = [...new Set(ids)];
-  const places = uniqueIds.map(getPlace);
-  const missing = uniqueIds.filter((_, index) => !places[index]);
-  if (missing.length) throw new Error(`Unknown place id(s): ${missing.join(', ')}.`);
-  if (places.length < 2) throw new Error('Compare at least two distinct, known place ids.');
+  const requested = Array.isArray(ids) ? ids : [];
+  const missing = requested.filter((value) => !resolvePlace(value));
+  if (missing.length) {
+    throw new Error(`Unknown place id(s): ${missing.map((value) => `"${String(value)}"`).join(', ')}. Valid ids: ${placeIdList()}.`);
+  }
+  const places = [...new Map(requested.map((value) => {
+    const place = resolvePlace(value);
+    return [place.id, place];
+  })).values()];
+  if (places.length < 2) {
+    throw new Error(`Compare at least two distinct places; ${places.length === 1 ? `"${places[0].id}" was given more than once` : 'no places were given'}. Valid ids: ${placeIdList()}.`);
+  }
   const pairs = [];
   for (let i = 0; i < places.length; i += 1) {
     for (let j = i + 1; j < places.length; j += 1) {
@@ -89,10 +121,18 @@ export function projectPoint(lat, lon, camera) {
   };
 }
 
-export function sunlit(lon, hour) {
-  const sunLon = (12 - hour) * 15;
+export function sunlit(lon, hourUtc) {
+  const sunLon = (12 - hourUtc) * 15;
   const delta = ((lon - sunLon + 540) % 360) - 180;
   return Math.abs(delta) < 90;
+}
+
+export function localHourToUtc(localHour, utcOffset) {
+  return (((localHour - utcOffset) % 24) + 24) % 24;
+}
+
+export function formatHour(hourUtc) {
+  return `${String(hourUtc).padStart(2, '0')}:00 UTC`;
 }
 
 export function exportMarkdown(scene) {
@@ -101,15 +141,27 @@ export function exportMarkdown(scene) {
     `# ${scene.title}`,
     '',
     `- Camera: ${cameraPlace ? cameraPlace.name : `${scene.camera.lat}, ${scene.camera.lon}`}`,
-    `- Visualization hour: ${String(scene.time).padStart(2, '0')}:00`,
+    `- Visualization hour: ${formatHour(scene.time)}`,
     `- Layers: ${Object.entries(scene.layers).filter(([, on]) => on).map(([id]) => id).join(', ') || 'none'}`,
     `- Pins: ${scene.pins.length}`,
+    `- Comparisons: ${scene.comparisons.length}`,
+    `- Measurements: ${scene.measurements.length}`,
     '',
     '## Pins',
-    ...scene.pins.map((pin) => {
-      const place = getPlace(pin.placeId);
-      return `- ${pin.label} (${place ? place.name : pin.placeId})${pin.note ? ` — ${pin.note}` : ''}`;
-    }),
+    ...(scene.pins.length
+      ? scene.pins.map((pin) => {
+          const place = getPlace(pin.placeId);
+          return `- ${pin.label} (${place ? place.name : pin.placeId})${pin.note ? ` — ${pin.note}` : ''}`;
+        })
+      : ['- None']),
+    '',
+    '## Comparisons',
+    ...(scene.comparisons.length
+      ? scene.comparisons.flatMap((item) => [
+          `- ${item.places.map((place) => place.name).join(' · ')} — population spread ${item.populationSpread}M`,
+          ...item.pairs.map((pair) => `  - ${pair.from} → ${pair.to}: ${pair.km} km, bearing ${pair.bearing}°`),
+        ])
+      : ['- None']),
     '',
     '## Measurements',
     ...(scene.measurements.length

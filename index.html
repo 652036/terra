@@ -33,19 +33,24 @@
       <div id="globe-stage" data-night="true" data-atmosphere="on" data-grid="off" aria-describedby="globe-help">
         <div class="cosmos"></div>
         <div class="atmosphere"></div>
-        <canvas id="globe-canvas" tabindex="0" role="img" aria-label="Interactive 3D Earth centered on Tokyo. Drag to rotate, use arrow keys to pan, and use the mouse wheel to zoom."></canvas>
+        <canvas id="globe-canvas" tabindex="0" role="application" aria-roledescription="3D globe" aria-label="Interactive 3D Earth centered on Tokyo at 13:00 UTC. Arrow keys rotate, plus and minus zoom; drag to rotate and scroll to zoom with a pointer."></canvas>
         <div class="sphere fallback-globe" aria-hidden="true">
           <div class="ocean"></div>
           <div class="terminator"></div>
         </div>
-        <svg id="place-dots" aria-label="Visible catalog places"></svg>
-        <div class="globe-hud" aria-hidden="true"><span>DRAG TO ORBIT</span><span id="zoom-readout">1.00×</span></div>
+        <svg id="place-dots" role="group" aria-label="Visible catalog places"></svg>
+        <div class="globe-hud" role="toolbar" aria-label="Globe view controls">
+          <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+          <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+          <button id="reset-view" type="button">Reset view</button>
+          <span id="zoom-readout">1.00×</span>
+        </div>
       </div>
-      <p id="globe-help" class="interaction-help">Drag to rotate · scroll to zoom · arrow keys also work</p>
+      <p id="globe-help" class="interaction-help">Drag to rotate · scroll or press + / − to zoom · arrow keys rotate</p>
       <label class="time-control">
-        Visualization hour
-        <input id="time-slider" type="range" min="0" max="23" value="21" aria-describedby="time-readout">
-        <output id="time-readout" for="time-slider">21:00</output>
+        Visualization hour (UTC)
+        <input id="time-slider" type="range" min="0" max="23" value="13" aria-describedby="time-readout">
+        <output id="time-readout" for="time-slider">13:00</output>
       </label>
     </section>
 
@@ -86,7 +91,7 @@
       <div class="demo-prompt">
         <p class="eyebrow">Try with an agent</p>
         <h2>Pacific corridor briefing</h2>
-        <p id="demo-prompt-text">Fly to Tokyo, compare it with Vancouver, measure their great-circle distance and initial bearing, set the visualization hour to 22:00, pin Tokyo as “Primary focus” and Vancouver as “Pacific counterpart,” and stage a concise briefing. Do not publish.</p>
+        <p id="demo-prompt-text">Fly to Tokyo, compare it with Vancouver, measure their great-circle distance and initial bearing, set the visualization hour to 13:00 UTC, pin Tokyo as “Primary focus” and Vancouver as “Pacific counterpart,” and stage a concise briefing. Do not publish.</p>
         <button id="copy-prompt" type="button">Copy demo prompt</button>
       </div>
 
@@ -111,7 +116,8 @@
 
       <section>
         <h2>Activity</h2>
-        <ul id="activity-list" aria-live="polite"></ul>
+        <p id="activity-latest" class="visually-hidden" role="status" aria-live="polite"></p>
+        <ul id="activity-list"></ul>
       </section>
     </section>
   </main>

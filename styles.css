@@ -33,6 +33,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .skip { position: fixed; z-index: 100; left: -9999px; top: 1rem; }
 .skip:focus { left: 1rem; background: #fff; color: #000; padding: .55rem .8rem; border-radius: .4rem; }
 
@@ -53,7 +54,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .eyebrow {
   margin: 0 0 .2rem;
   color: var(--muted);
-  font-size: .68rem;
+  font-size: .75rem;
   font-weight: 720;
   letter-spacing: .18em;
   text-transform: uppercase;
@@ -70,7 +71,7 @@ h3 { margin: 1rem 0 .4rem; color: var(--muted); font-size: .82rem; text-transfor
   border-radius: 999px;
   color: var(--muted);
   background: rgba(5, 15, 23, .8);
-  font-size: .73rem;
+  font-size: .75rem;
   white-space: nowrap;
 }
 #webmcp-status::before { content: ""; display: inline-block; width: .45rem; height: .45rem; margin-right: .38rem; border-radius: 50%; background: #d5a95e; box-shadow: 0 0 9px currentColor; }
@@ -106,10 +107,12 @@ main {
   border: 1px solid rgba(141, 207, 219, .14);
   border-radius: .85rem;
   background: radial-gradient(circle at 50% 46%, #102d43 0, #07131d 42%, #020509 78%);
-  touch-action: none;
+  touch-action: pan-y;
   cursor: grab;
   user-select: none;
 }
+/* Once the globe has focus (first tap), it owns the touch gesture so vertical orbit works; tapping elsewhere restores page scrolling. */
+#globe-stage:focus-within { touch-action: none; }
 #globe-stage[data-dragging="true"] { cursor: grabbing; }
 .cosmos { position: absolute; z-index: -3; inset: 0; opacity: .85; background-image:
   radial-gradient(circle at 8% 16%, rgba(255,255,255,.8) 0 1px, transparent 1.4px),
@@ -160,9 +163,24 @@ main {
 .place-dot.is-lit .marker-core { fill: #ffe5a0; stroke: #fff2c8; filter: drop-shadow(0 0 4px #ffd38a) drop-shadow(0 0 8px rgba(255,191,90,.8)); }
 .place-dot.is-active .marker-core { r: 6.5px; fill: var(--focus); stroke: white; stroke-width: 1.4; filter: drop-shadow(0 0 7px rgba(110,240,223,.9)); }
 .pin-ring { fill: none; stroke: var(--pin); stroke-width: 1.6; }
-.place-dot text { fill: var(--ink); font: 650 10px/1 ui-sans-serif, system-ui, sans-serif; paint-order: stroke; stroke: rgba(0,0,0,.9); stroke-width: 3px; stroke-linejoin: round; }
-.globe-hud { position: absolute; z-index: 4; right: .75rem; bottom: .65rem; left: .75rem; display: flex; justify-content: space-between; color: rgba(183, 217, 225, .62); font: 600 .62rem/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .12em; pointer-events: none; }
-.interaction-help { margin: .55rem 0 0; color: var(--muted); font-size: .72rem; text-align: center; }
+.place-dot text { fill: var(--ink); font: 650 12px/1 ui-sans-serif, system-ui, sans-serif; paint-order: stroke; stroke: rgba(0,0,0,.9); stroke-width: 3px; stroke-linejoin: round; }
+.globe-hud { position: absolute; z-index: 4; right: .75rem; bottom: .65rem; display: flex; align-items: center; gap: .4rem; touch-action: auto; cursor: default; }
+.globe-hud button {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0 .6rem;
+  border: 1px solid var(--line-strong);
+  border-radius: .55rem;
+  background: rgba(6, 18, 26, .84);
+  color: var(--ink);
+  font: 600 .95rem/1 ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+.globe-hud button:hover:not(:disabled) { background: rgba(20, 57, 77, .9); }
+.globe-hud #reset-view { font-size: .78rem; }
+.globe-hud #zoom-readout { padding: 0 .3rem; color: rgba(183, 217, 225, .82); font: 600 .75rem/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .08em; }
+.interaction-help { margin: .55rem 0 0; color: var(--muted); font-size: .75rem; text-align: center; }
 .time-control { display: grid; grid-template-columns: auto minmax(100px, 1fr) 3rem; align-items: center; gap: .75rem; margin-top: .65rem; color: var(--muted); font-size: .78rem; }
 .time-control input { width: 100%; }
 .time-control output { color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; }
@@ -185,7 +203,7 @@ button:disabled, input:disabled { cursor: not-allowed; opacity: .48; }
 .board #place-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .board #place-list button { display: flex; width: 100%; justify-content: space-between; gap: .45rem; padding: .42rem .55rem; text-align: left; }
 .board button.is-active { border-color: rgba(110,240,223,.55); background: rgba(37, 107, 109, .32); }
-.board small { color: var(--muted); font-size: .66rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board small { color: var(--muted); font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .board em { color: var(--muted); font-size: .75rem; }
 #pin-list li { display: grid; grid-template-columns: auto 1fr; gap: 0 .5rem; border-left: 2px solid var(--pin); padding-left: .55rem; }
 #pin-list em { grid-column: 1 / -1; }
@@ -208,10 +226,10 @@ button.primary { border-color: rgba(110,240,223,.45) !important; background: #16
 #tool-form label { color: var(--muted); font-size: .76rem; }
 textarea, select { width: 100%; border: 1px solid var(--line); border-radius: .45rem; background: #030a0f; color: var(--ink); padding: .48rem; }
 textarea { resize: vertical; min-height: 7rem; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .75rem; }
-pre { min-height: 6.5rem; max-height: 18rem; margin: 0; overflow: auto; border: 1px solid rgba(145,192,205,.1); border-radius: .45rem; background: #03090e; color: #bfe4e3; padding: .65rem; font: .7rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+pre { min-height: 6.5rem; max-height: 18rem; margin: 0; overflow: auto; border: 1px solid rgba(145,192,205,.1); border-radius: .45rem; background: #03090e; color: #bfe4e3; padding: .65rem; font: .75rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 #activity-list { max-height: 21rem; overflow: auto; }
 
-footer { width: min(1480px, calc(100% - 2rem)); margin: 0 auto 1rem; padding: .8rem 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .72rem; text-align: center; }
+footer { width: min(1480px, calc(100% - 2rem)); margin: 0 auto 1rem; padding: .8rem 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .75rem; text-align: center; }
 footer p { margin: 0; }
 
 dialog {
@@ -252,7 +270,7 @@ dialog h2 { font-size: 1.2rem; }
   .topbar { padding: .75rem; }
   .topbar .eyebrow { display: none; }
   .status-cluster { gap: .3rem; }
-  #webmcp-status, #published-flag { font-size: .63rem; }
+  #webmcp-status, #published-flag { font-size: .75rem; }
   main { padding: .65rem; gap: .65rem; }
   .globe-panel, .board section, .ops > *, .ops > section { border-radius: .7rem; padding: .72rem; }
   #globe-stage { height: 54vh; min-height: 310px; }
@@ -261,13 +279,19 @@ dialog h2 { font-size: 1.2rem; }
   .board #place-list { grid-template-columns: 1fr; }
   .ops { grid-template-columns: 1fr; gap: .65rem; }
   #staged-review { grid-column: 1; }
-  .interaction-help { font-size: .66rem; }
+  .interaction-help { font-size: .75rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
 @media (forced-colors: active) {
-  .place-dot { forced-color-adjust: none; background: ButtonText; }
+  .place-dot { forced-color-adjust: none; }
+  .place-dot .marker-core { fill: ButtonText; stroke: Canvas; stroke-width: 1.5; filter: none; }
+  .place-dot.is-active .marker-core { fill: Highlight; stroke: Canvas; }
+  .place-dot.is-lit .marker-core { fill: ButtonText; stroke: Canvas; }
+  .place-dot .pin-ring { stroke: Highlight; }
+  .place-dot:focus .marker-hit { stroke: Highlight; }
+  .place-dot text { fill: CanvasText; stroke: Canvas; }
   #globe-stage { border: 2px solid CanvasText; }
 }

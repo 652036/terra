@@ -7,6 +7,8 @@
   [headers.values]
     Origin-Agent-Cluster = "?1"
     Permissions-Policy = "tools=(self)"
+    Content-Security-Policy = "frame-ancestors 'none'"
+    X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "no-referrer"
     Cross-Origin-Resource-Policy = "same-origin"

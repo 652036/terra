@@ -1,4 +1,4 @@
-const CACHE = 'terra-v3';
+const CACHE = 'terra-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -26,22 +26,56 @@ self.addEventListener('activate', (event) => {
   ]));
 });
 
+async function putInCache(request, response) {
+  if (!response || !response.ok) return;
+  const cache = await caches.open(CACHE);
+  await cache.put(request, response.clone());
+}
+
+async function offlineFallback(request) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+  if (request.mode === 'navigate') {
+    const shell = await caches.match('./index.html');
+    if (shell) return shell;
+  }
+  return Response.error();
+}
+
+async function networkFirst(request) {
+  try {
+    const response = await fetch(request);
+    await putInCache(request, response);
+    return response;
+  } catch {
+    return offlineFallback(request);
+  }
+}
+
+async function staleWhileRevalidate(request) {
+  const cached = await caches.match(request);
+  const refresh = fetch(request).then(async (response) => {
+    await putInCache(request, response);
+    return response;
+  });
+  if (cached) {
+    refresh.catch(() => {});
+    return cached;
+  }
+  return refresh.catch(() => offlineFallback(request));
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
-  const sameOrigin = url.origin === self.location.origin;
-  const networkFirst = sameOrigin && (
-    event.request.mode === 'navigate' ||
-    url.pathname.endsWith('/index.html') ||
-    url.pathname.endsWith('/styles.css') ||
-    url.pathname.includes('/src/')
-  );
-  if (networkFirst) {
-    event.respondWith(fetch(event.request).then((response) => {
-      if (response.ok) caches.open(CACHE).then((cache) => cache.put(event.request, response.clone()));
-      return response;
-    }).catch(() => caches.match(event.request)));
-    return;
+  if (url.origin !== self.location.origin) return;
+  const isShell = event.request.mode === 'navigate' || url.pathname.endsWith('/index.html') || url.pathname.endsWith('/styles.css');
+  const isVersionedAsset = url.pathname.includes('/src/') || url.pathname.includes('/assets/');
+  if (isShell) {
+    event.respondWith(networkFirst(event.request));
+  } else if (isVersionedAsset) {
+    event.respondWith(staleWhileRevalidate(event.request));
+  } else {
+    event.respondWith(caches.match(event.request).then((cached) => cached || networkFirst(event.request)));
   }
-  event.respondWith(caches.match(event.request).then((cached) => cached || fetch(event.request)));
 });

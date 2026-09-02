@@ -14,6 +14,14 @@ export function incrementRevision(value) {
   return value + 1;
 }
 
+export function isoDateOrNow(value, now = () => new Date()) {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    const time = Date.parse(value);
+    if (Number.isFinite(time)) return new Date(time).toISOString();
+  }
+  return now().toISOString();
+}
+
 export function normalizeMeasurementValues(item) {
   if (!item || typeof item !== 'object') return null;
   const { km, bearing } = item;
@@ -24,12 +32,14 @@ export function normalizeMeasurementValues(item) {
 
 export function getAgentUndoTarget(history, currentRevision, expectedRevision) {
   if (expectedRevision !== currentRevision) {
-    throw new Error(`Revision conflict: expected ${expectedRevision}, current revision is ${currentRevision}. Read the scene again.`);
+    throw new Error(`Revision conflict: scene is at revision ${currentRevision}, not ${expectedRevision}. Call terra_read_scene and retry with the current revision.`);
   }
   const previous = history.at(-1);
-  if (!previous) throw new Error('Nothing to undo. Undo history begins with changes made in this tab.');
+  if (!previous) {
+    throw new Error('Nothing to undo: no reversible change has been recorded in this tab yet. Make a change with a mutation tool first.');
+  }
   if (previous.actor !== 'agent' || previous.resultRevision !== currentRevision) {
-    throw new Error('Undo refused: the latest scene change was made through the visible user interface or is no longer the current revision.');
+    throw new Error(`Undo refused: the latest change (${previous.label}) was made through the visible user interface or is no longer the current revision. Only the most recent agent-authored change can be undone; call terra_read_scene to see the current state.`);
   }
   return previous;
 }
@@ -55,6 +65,28 @@ export function createUniqueId(prefix, isTaken, randomToken = () => (
     if (!isTaken(candidate)) return candidate;
   }
   throw new Error(`Could not allocate a unique ${prefix} id.`);
+}
+
+// Tracks one continuous human edit (slider drag, key repeat) so a snapshot is taken only once,
+// and only when the value really changed from where the edit began.
+export function createEditSession() {
+  let origin = null;
+  return {
+    get active() {
+      return origin !== null;
+    },
+    begin(current) {
+      if (origin !== null) return false;
+      origin = current;
+      return true;
+    },
+    finish(current) {
+      if (origin === null) return null;
+      const from = origin;
+      origin = null;
+      return { from, to: current, changed: from !== current };
+    },
+  };
 }
 
 export function removeOneByStableId(items, id) {

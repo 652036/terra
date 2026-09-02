@@ -1,20 +1,24 @@
 import { LAYERS, PLACES, blankScene, exampleScene } from './data.js';
 import {
-  bearingDegrees,
+  catalogEntry,
   comparePlaces,
   findPlace,
+  formatHour,
   getPlace,
-  haversineKm,
+  localHourToUtc,
   projectPoint,
+  requirePlace,
   sunlit,
 } from './engine.js';
 import { GlobeRenderer } from './globe.js';
-import { MAX_READ_ITEMS, READ_SCENE_SECTIONS, exportMarkdownChunk, readScenePage } from './output.js';
+import { MAX_READ_ITEMS, MAX_READ_OFFSET, READ_SCENE_SECTIONS, exportMarkdownChunk, readScenePage } from './output.js';
 import {
+  createEditSession,
   createUniqueId,
   dedupeByStableId,
   getAgentUndoTarget,
   incrementRevision,
+  isoDateOrNow,
   normalizeMeasurementValues,
   normalizeRevision,
   removeOneByStableId,
@@ -25,7 +29,11 @@ const STORAGE_KEY = 'terra-scene-v2';
 const LEGACY_STORAGE_KEY = 'terra-scene-v1';
 const HISTORY_LIMIT = 20;
 const PIN_LIMIT = 24;
+const COMPARISON_LIMIT = 6;
+const MEASUREMENT_LIMIT = 8;
 const ACTIVITY_LIMIT = 20;
+const ALTITUDE_MIN = 0.72;
+const ALTITUDE_MAX = 1.55;
 
 const annotation = Object.freeze({
   read: Object.freeze({ readOnlyHint: true }),
@@ -60,13 +68,13 @@ function hydrateScene(candidate) {
         placeId: requestedPlace.id,
         lat: requestedPlace.lat,
         lon: requestedPlace.lon,
-        altitude: clamp(finiteNumber(candidate.camera?.altitude, 1), 0.72, 1.55),
+        altitude: clamp(finiteNumber(candidate.camera?.altitude, 1), ALTITUDE_MIN, ALTITUDE_MAX),
       }
     : {
         placeId: null,
         lat: clamp(finiteNumber(candidate.camera?.lat, base.camera.lat), -85, 85),
         lon: normalizeLongitude(finiteNumber(candidate.camera?.lon, base.camera.lon)),
-        altitude: clamp(finiteNumber(candidate.camera?.altitude, 1), 0.72, 1.55),
+        altitude: clamp(finiteNumber(candidate.camera?.altitude, 1), ALTITUDE_MIN, ALTITUDE_MAX),
       };
   const layers = Object.fromEntries(LAYERS.map((layer) => [
     layer.id,
@@ -84,7 +92,7 @@ function hydrateScene(candidate) {
       })
     : []);
   const comparisons = Array.isArray(candidate.comparisons)
-    ? candidate.comparisons.slice(0, 6).flatMap((item, index) => {
+    ? candidate.comparisons.slice(0, COMPARISON_LIMIT).flatMap((item, index) => {
         try {
           const ids = Array.isArray(item?.places) ? item.places.map((place) => place?.id).filter(Boolean) : [];
           return [{ id: safeId(item?.id, `cmp-restored-${index + 1}`), ...comparePlaces(ids) }];
@@ -94,7 +102,7 @@ function hydrateScene(candidate) {
       })
     : [];
   const measurements = Array.isArray(candidate.measurements)
-    ? candidate.measurements.slice(0, 8).flatMap((item, index) => {
+    ? candidate.measurements.slice(0, MEASUREMENT_LIMIT).flatMap((item, index) => {
         const values = normalizeMeasurementValues(item);
         if (!values) return [];
         return [{
@@ -109,7 +117,7 @@ function hydrateScene(candidate) {
     ? candidate.activity.slice(0, ACTIVITY_LIMIT).flatMap((item) => {
         if (!item || typeof item.message !== 'string') return [];
         return [{
-          at: typeof item.at === 'string' ? item.at : new Date().toISOString(),
+          at: isoDateOrNow(item.at),
           message: safeText(item.message, 240, 'Scene changed.'),
         }];
       })
@@ -119,7 +127,7 @@ function hydrateScene(candidate) {
         id: safeId(candidate.stagedBrief.id, 'brief-restored'),
         headline: safeText(candidate.stagedBrief.headline, 160, 'Untitled brief'),
         body: safeText(candidate.stagedBrief.body, 4000, 'No briefing body.'),
-        at: typeof candidate.stagedBrief.at === 'string' ? candidate.stagedBrief.at : new Date().toISOString(),
+        at: isoDateOrNow(candidate.stagedBrief.at),
       }
     : null;
   return {
@@ -157,13 +165,32 @@ const globeRenderer = new GlobeRenderer(globeCanvas, {
   textureUrl: new URL('../assets/earth-texture.svg', import.meta.url).href,
 });
 
-function persist() {
+const PERSIST_DEBOUNCE_MS = 200;
+let persistTimer = null;
+
+function persistNow() {
+  globalThis.clearTimeout(persistTimer);
+  persistTimer = null;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state.scene, history: [] }));
     localStorage.removeItem(LEGACY_STORAGE_KEY);
   } catch (error) {
     console.warn('TERRA could not persist this scene.', error);
   }
+}
+
+function persist() {
+  if (persistTimer !== null) return;
+  persistTimer = globalThis.setTimeout(persistNow, PERSIST_DEBOUNCE_MS);
+}
+
+let globeFrame = 0;
+function scheduleGlobeRender() {
+  if (globeFrame) return;
+  globeFrame = requestAnimationFrame(() => {
+    globeFrame = 0;
+    renderGlobe();
+  });
 }
 
 function snapshot(label, actor) {
@@ -175,6 +202,11 @@ function snapshot(label, actor) {
     scene: structuredClone({ ...state.scene, history: [] }),
   });
   if (state.scene.history.length > HISTORY_LIMIT) state.scene.history.shift();
+}
+
+function discardPendingSnapshot(label) {
+  const pending = state.scene.history.at(-1);
+  if (pending?.label === label && pending.actor === 'user' && pending.resultRevision === null) state.scene.history.pop();
 }
 
 function log(message, actor) {
@@ -198,8 +230,14 @@ function nextId(prefix) {
 }
 
 function assertOpen() {
-  if (state.scene.published) throw new Error('Scene is published. Mutation tools are locked until it is reopened from the visible UI.');
+  if (state.scene.published) {
+    throw new Error(`Scene is published at revision ${state.scene.revision}; mutation tools are locked until a person clicks "Reopen scene" in the visible UI. Read-only tools still work: ${alwaysTools().map((tool) => tool.name).join(', ')}.`);
+  }
   incrementRevision(state.scene.revision);
+}
+
+function pinIdList() {
+  return state.scene.pins.length ? `Current pin ids: ${state.scene.pins.map((pin) => pin.id).join(', ')}.` : 'There are no pins yet.';
 }
 
 function ensureNotAborted(signal) {
@@ -225,8 +263,34 @@ function sceneReceipt(action, result = {}) {
   };
 }
 
+const FOCUS_KEYS = ['place', 'layer', 'pin'];
+
+function captureFocus() {
+  const active = document.activeElement;
+  if (!active || active === document.body) return null;
+  for (const key of FOCUS_KEYS) {
+    const owner = active.closest?.(`[data-${key}]`);
+    if (!owner) continue;
+    const container = owner.closest('[id]');
+    return { containerId: container?.id ?? null, selector: `[data-${key}="${owner.dataset[key]}"]` };
+  }
+  return null;
+}
+
+function restoreFocus(token) {
+  if (!token) return;
+  const scope = token.containerId ? document.getElementById(token.containerId) : document;
+  const target = scope?.querySelector(token.selector);
+  if (target && target !== document.activeElement) target.focus({ preventScroll: true });
+}
+
 function renderGlobe() {
+  if (globeFrame) {
+    cancelAnimationFrame(globeFrame);
+    globeFrame = 0;
+  }
   const scene = state.scene;
+  const focusToken = captureFocus();
   const cameraPlace = getPlace(scene.camera.placeId);
   const cameraText = cameraPlace
     ? `${cameraPlace.name} · ${cameraPlace.country}`
@@ -237,17 +301,17 @@ function renderGlobe() {
   document.getElementById('zoom-readout').textContent = `${scene.camera.altitude.toFixed(2)}×`;
   globeCanvas.setAttribute(
     'aria-label',
-    `Interactive 3D Earth centered on ${cameraText} at ${String(scene.time).padStart(2, '0')}:00. Drag to rotate, use arrow keys to pan, and use the mouse wheel to zoom.`,
+    `Interactive 3D Earth centered on ${cameraText} at ${formatHour(scene.time)}. Arrow keys rotate, plus and minus zoom; drag to rotate and scroll to zoom with a pointer.`,
   );
 
   const globe = document.getElementById('globe-stage');
-  globe.dataset.night = scene.time >= 19 || scene.time <= 6 ? 'true' : 'false';
+  globe.dataset.night = sunlit(scene.camera.lon, scene.time) ? 'false' : 'true';
   globe.dataset.atmosphere = scene.layers.atmosphere ? 'on' : 'off';
   globe.dataset.grid = scene.layers.grid ? 'on' : 'off';
   globeRenderer.render(scene);
 
   const rect = globe.getBoundingClientRect();
-  const altitude = clamp(Number(scene.camera.altitude) || 1, 0.72, 1.55);
+  const altitude = clamp(Number(scene.camera.altitude) || 1, ALTITUDE_MIN, ALTITUDE_MAX);
   const baseScale = Math.min(0.9, 0.82 / altitude);
   const radius = Math.min(rect.width, rect.height) * baseScale * 0.5;
   const markerLayer = document.getElementById('place-dots');
@@ -271,11 +335,13 @@ function renderGlobe() {
     return `<g class="${classes}" data-place="${place.id}" transform="translate(${left.toFixed(1)} ${top.toFixed(1)})" opacity="${opacity.toFixed(2)}" role="button" tabindex="${scene.published ? '-1' : '0'}" aria-disabled="${scene.published}" aria-label="Fly to ${escapeHTML(place.name)}, ${escapeHTML(place.country)}"><title>${escapeHTML(place.name)}</title><circle class="marker-hit" r="13"></circle>${pinned ? '<circle class="pin-ring" r="9"></circle>' : ''}<circle class="marker-core" r="4.5"></circle>${scene.layers.labels ? `<text x="12" y="3">${escapeHTML(place.name)}</text>` : ''}</g>`;
   }).join('');
   markerLayer.innerHTML = dots;
+  restoreFocus(focusToken);
 }
 
 function render() {
   persist();
   const scene = state.scene;
+  const focusToken = captureFocus();
   renderGlobe();
   document.getElementById('workspace-title').textContent = scene.title;
   document.getElementById('published-flag').hidden = !scene.published;
@@ -284,6 +350,7 @@ function render() {
   document.getElementById('example-scene').disabled = scene.published;
   document.getElementById('reset-scene').disabled = scene.published;
   document.getElementById('time-slider').disabled = scene.published;
+  for (const id of ['zoom-in', 'zoom-out', 'reset-view']) document.getElementById(id).disabled = scene.published;
 
   document.getElementById('place-list').innerHTML = PLACES.map((place) => {
     const active = scene.camera.placeId === place.id;
@@ -312,6 +379,9 @@ function render() {
   document.getElementById('activity-list').innerHTML = scene.activity.length
     ? scene.activity.map((item) => `<li><time datetime="${escapeHTML(item.at)}">${escapeHTML(new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</time> · ${escapeHTML(item.message)}</li>`).join('')
     : '<li class="empty">Quiet globe.</li>';
+  const latestActivity = document.getElementById('activity-latest');
+  const latestMessage = scene.activity[0]?.message ?? '';
+  if (latestActivity.textContent !== latestMessage) latestActivity.textContent = latestMessage;
 
   const staged = document.getElementById('staged-review');
   if (scene.stagedBrief) {
@@ -325,6 +395,7 @@ function render() {
   document.querySelectorAll('[data-focus]').forEach((node) => {
     node.classList.toggle('is-focused', node.dataset.focus === state.focus);
   });
+  restoreFocus(focusToken);
 }
 
 function mutationTools() {
@@ -337,19 +408,31 @@ function mutationTools() {
         type: 'object',
         additionalProperties: false,
         required: ['placeId'],
-        properties: { placeId: { ...schemas.id, description: 'Catalog place id returned by terra_list_places or terra_search_place.' } },
+        properties: {
+          placeId: { ...schemas.id, description: 'Catalog place id (or city name) returned by terra_find_places.' },
+          altitude: {
+            type: 'number',
+            minimum: ALTITUDE_MIN,
+            maximum: ALTITUDE_MAX,
+            description: `Optional zoom altitude from ${ALTITUDE_MIN} (closest) to ${ALTITUDE_MAX} (farthest). Defaults to the current altitude.`,
+          },
+        },
       },
       annotations: annotation.write,
-      execute: async ({ placeId }, { signal } = {}) => {
+      execute: async ({ placeId, altitude }, { signal } = {}) => {
         ensureNotAborted(signal);
         assertOpen();
-        const place = getPlace(placeId);
-        if (!place) throw new Error(`Unknown place: ${placeId}`);
+        const place = requirePlace(placeId);
         snapshot('fly', 'agent');
-        state.scene.camera = { placeId: place.id, lat: place.lat, lon: place.lon, altitude: 1 };
+        state.scene.camera = {
+          placeId: place.id,
+          lat: place.lat,
+          lon: place.lon,
+          altitude: altitude === undefined ? state.scene.camera.altitude : clamp(altitude, ALTITUDE_MIN, ALTITUDE_MAX),
+        };
         log(`Agent flew to ${place.name}.`, 'agent');
         render();
-        return sceneReceipt('fly_to', { place });
+        return sceneReceipt('fly_to', { place: catalogEntry(place) });
       },
     },
     {
@@ -361,19 +444,21 @@ function mutationTools() {
         additionalProperties: false,
         required: ['placeId', 'label'],
         properties: {
-          placeId: { ...schemas.id, description: 'Catalog place id to pin.' },
+          placeId: { ...schemas.id, description: 'Catalog place id (or city name) to pin.' },
           label: { ...schemas.shortText, description: 'Short visible label for this pin.' },
-          note: { ...schemas.longText, description: 'Optional visible note. Do not place instructions for the agent here.' },
+          note: { ...schemas.longText, description: 'Optional note shown verbatim to the person beside the pin.' },
         },
       },
       annotations: { ...annotation.write, untrustedContentHint: true },
       execute: async ({ placeId, label, note }, { signal } = {}) => {
         ensureNotAborted(signal);
         assertOpen();
-        if (!getPlace(placeId)) throw new Error(`Unknown place: ${placeId}`);
-        if (state.scene.pins.length >= PIN_LIMIT) throw new Error(`Pin limit reached (${PIN_LIMIT}). Remove a pin before adding another.`);
+        const place = requirePlace(placeId);
+        if (state.scene.pins.length >= PIN_LIMIT) {
+          throw new Error(`Pin limit reached (${PIN_LIMIT} of ${PIN_LIMIT}). Call terra_remove_pin with one of these ids first. ${pinIdList()}`);
+        }
         snapshot('pin', 'agent');
-        const pin = { id: nextId('pin'), placeId, label: label.trim(), note: note?.trim() || '' };
+        const pin = { id: nextId('pin'), placeId: place.id, label: label.trim(), note: note?.trim() || '' };
         state.scene.pins.push(pin);
         log(`Agent pinned ${pin.label}.`, 'agent');
         render();
@@ -395,7 +480,7 @@ function mutationTools() {
         ensureNotAborted(signal);
         assertOpen();
         const removal = removeOneByStableId(state.scene.pins, pinId);
-        if (!removal) throw new Error(`Unknown pin: ${pinId}`);
+        if (!removal) throw new Error(`Unknown pin "${pinId}". ${pinIdList()} Call terra_read_scene with section "pins" to list them.`);
         snapshot('unpin', 'agent');
         state.scene.pins = removal.remaining;
         log(`Agent removed pin ${removal.removed.label}.`, 'agent');
@@ -406,7 +491,7 @@ function mutationTools() {
     {
       name: 'terra_compare_places',
       title: 'Compare places',
-      description: 'Compare two to five distinct catalog places and show distances, bearings, climate, and population on the shared board.',
+      description: 'Compare two to five distinct catalog places: pairwise great-circle distance and initial bearing, climate, and population appear on the shared board. With exactly two places the pair is also recorded in the Measurements panel.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -418,7 +503,7 @@ function mutationTools() {
             maxItems: 5,
             uniqueItems: true,
             items: schemas.id,
-            description: 'Two to five distinct catalog place ids.',
+            description: 'Two to five distinct catalog place ids or city names. Pass exactly two to measure one distance.',
           },
         },
       },
@@ -430,67 +515,59 @@ function mutationTools() {
         snapshot('compare', 'agent');
         const comparison = { id: nextId('cmp'), ...compared };
         state.scene.comparisons.unshift(comparison);
-        state.scene.comparisons = state.scene.comparisons.slice(0, 6);
-        log(`Agent compared ${comparison.places.map((place) => place.name).join(', ')}.`, 'agent');
+        state.scene.comparisons = state.scene.comparisons.slice(0, COMPARISON_LIMIT);
+        let measurement = null;
+        if (comparison.places.length === 2) {
+          const [pair] = comparison.pairs;
+          measurement = {
+            id: nextId('msr'),
+            from: comparison.places[0].name,
+            to: comparison.places[1].name,
+            km: pair.km,
+            bearing: pair.bearing,
+          };
+          state.scene.measurements.unshift(measurement);
+          state.scene.measurements = state.scene.measurements.slice(0, MEASUREMENT_LIMIT);
+        }
+        log(`Agent compared ${comparison.places.map((place) => place.name).join(', ')}${measurement ? ` and measured ${measurement.km.toLocaleString()} km` : ''}.`, 'agent');
         render();
-        return sceneReceipt('compare_places', { comparison });
-      },
-    },
-    {
-      name: 'terra_measure_distance',
-      title: 'Measure great-circle distance',
-      description: 'Measure the great-circle distance and initial bearing between two distinct catalog places, then show it beside the globe.',
-      inputSchema: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['fromId', 'toId'],
-        properties: {
-          fromId: { ...schemas.id, description: 'Starting catalog place id.' },
-          toId: { ...schemas.id, description: 'Destination catalog place id.' },
-        },
-      },
-      annotations: annotation.write,
-      execute: async ({ fromId, toId }, { signal } = {}) => {
-        ensureNotAborted(signal);
-        assertOpen();
-        const from = getPlace(fromId);
-        const to = getPlace(toId);
-        if (!from || !to) throw new Error('Both place ids must exist in the catalog.');
-        if (from.id === to.id) throw new Error('Choose two distinct places to measure.');
-        snapshot('measure', 'agent');
-        const measurement = {
-          id: nextId('msr'),
-          from: from.name,
-          to: to.name,
-          km: Number(haversineKm(from, to).toFixed(1)),
-          bearing: Number(bearingDegrees(from, to).toFixed(1)),
-        };
-        state.scene.measurements.unshift(measurement);
-        state.scene.measurements = state.scene.measurements.slice(0, 8);
-        log(`Agent measured ${measurement.from} → ${measurement.to}.`, 'agent');
-        render();
-        return sceneReceipt('measure_distance', { measurement });
+        return sceneReceipt('compare_places', measurement ? { comparison, measurement } : { comparison });
       },
     },
     {
       name: 'terra_set_time',
       title: 'Set globe time',
-      description: 'Set the visualization hour from 0 through 23. This moves the day-night terminator and city-light state on the shared globe.',
+      description: 'Set the visualization hour in UTC (0 through 23). This moves the day-night terminator and city-light state on the shared globe. Pass localTo to give the hour in one catalog place\'s local time instead.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
         required: ['hour'],
-        properties: { hour: { type: 'integer', minimum: 0, maximum: 23, description: 'Visualization hour using a 24-hour clock.' } },
+        properties: {
+          hour: {
+            type: 'integer',
+            minimum: 0,
+            maximum: 23,
+            description: 'Visualization hour in UTC; the sun is overhead at longitude (12−hour)×15°. Tokyo (UTC+9) is dark roughly for hours 9–20 UTC. When localTo is set, this is that place\'s local hour instead.',
+          },
+          localTo: {
+            ...schemas.id,
+            description: 'Optional catalog place id or city name. When set, hour is read as local time at that place and converted to UTC using its utcOffset.',
+          },
+        },
       },
       annotations: annotation.write,
-      execute: async ({ hour }, { signal } = {}) => {
+      execute: async ({ hour, localTo }, { signal } = {}) => {
         ensureNotAborted(signal);
         assertOpen();
+        const place = localTo === undefined ? null : requirePlace(localTo);
+        const hourUtc = place ? localHourToUtc(hour, place.utcOffset) : hour;
         snapshot('time', 'agent');
-        state.scene.time = hour;
-        log(`Agent set visualization hour to ${String(hour).padStart(2, '0')}:00.`, 'agent');
+        state.scene.time = hourUtc;
+        log(`Agent set visualization hour to ${formatHour(hourUtc)}${place ? ` (${String(hour).padStart(2, '0')}:00 in ${place.name})` : ''}.`, 'agent');
         render();
-        return sceneReceipt('set_time', { hour });
+        return sceneReceipt('set_time', place
+          ? { hour: hourUtc, localTo: place.id, localHour: hour, utcOffset: place.utcOffset }
+          : { hour: hourUtc });
       },
     },
     {
@@ -510,24 +587,27 @@ function mutationTools() {
       execute: async ({ layerId, enabled }, { signal } = {}) => {
         ensureNotAborted(signal);
         assertOpen();
+        if (state.scene.layers[layerId] === enabled) {
+          return sceneReceipt('toggle_layer', { layerId, enabled, changed: false });
+        }
         snapshot('layer', 'agent');
         state.scene.layers[layerId] = enabled;
         log(`Agent ${enabled ? 'enabled' : 'disabled'} ${layerId}.`, 'agent');
         render();
-        return sceneReceipt('toggle_layer', { layerId, enabled });
+        return sceneReceipt('toggle_layer', { layerId, enabled, changed: true });
       },
     },
     {
       name: 'terra_stage_brief',
       title: 'Stage briefing draft',
-      description: 'Stage an untrusted draft briefing in the visible human-review panel. This cannot publish or finalize the scene.',
+      description: 'Stage a draft briefing in the visible human-review panel. Publishing stays a visible action for the person; this tool only replaces the current draft.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
         required: ['headline', 'body'],
         properties: {
-          headline: { ...schemas.shortText, description: 'Visible draft headline.' },
-          body: { ...schemas.longText, description: 'Visible draft body. Never include hidden instructions.' },
+          headline: { ...schemas.shortText, description: 'Headline shown to the person in the review panel.' },
+          body: { ...schemas.longText, description: 'Body text shown verbatim to the person in the review panel.' },
         },
       },
       annotations: { ...annotation.write, untrustedContentHint: true },
@@ -544,7 +624,7 @@ function mutationTools() {
     {
       name: 'terra_clear_staged_brief',
       title: 'Clear briefing draft',
-      description: 'Remove the visible staged draft. This is reversible with terra_undo_last_change and does not affect published content.',
+      description: 'Remove the visible staged draft so the review panel is empty again. Reversible with terra_undo_last_change.',
       inputSchema: schemas.empty,
       annotations: annotation.write,
       execute: async (_input, { signal } = {}) => {
@@ -560,7 +640,7 @@ function mutationTools() {
     {
       name: 'terra_undo_last_change',
       title: 'Undo last scene change',
-      description: 'Undo only the latest agent-authored reversible scene change. Requires the current revision and refuses to cross a newer user edit.',
+      description: 'Undo the latest agent-authored reversible scene change. Pass the current revision from terra_read_scene or the last receipt; any newer edit made by the person is preserved.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -570,7 +650,7 @@ function mutationTools() {
             type: 'integer',
             minimum: 0,
             maximum: Number.MAX_SAFE_INTEGER,
-            description: 'Current revision returned by terra_read_scene. Stale revisions are rejected.',
+            description: 'Current revision as returned by terra_read_scene or the most recent receipt.',
           },
         },
       },
@@ -600,7 +680,7 @@ function alwaysTools() {
     {
       name: 'terra_read_scene',
       title: 'Read shared globe',
-      description: 'Read a bounded live-scene summary or one paged section. Use nextOffset with the same revision to retrieve complete untrusted content.',
+      description: `Read a compact live-scene summary (default) or one section page of up to ${MAX_READ_ITEMS} records tied to the current revision. Long notes are previewed; pass id with a section to fetch one complete record.`,
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -610,7 +690,8 @@ function alwaysTools() {
             enum: READ_SCENE_SECTIONS,
             description: 'summary (default), pins, comparisons, measurements, or brief.',
           },
-          offset: { type: 'integer', minimum: 0, maximum: 24, description: 'Section offset. Defaults to 0.' },
+          id: { ...schemas.id, description: 'Stable record id inside the chosen section. Returns that complete record instead of a page.' },
+          offset: { type: 'integer', minimum: 0, maximum: MAX_READ_OFFSET, description: 'Section offset. Defaults to 0.' },
           limit: { type: 'integer', minimum: 1, maximum: MAX_READ_ITEMS, description: `Items per page, 1 to ${MAX_READ_ITEMS}. Defaults to ${MAX_READ_ITEMS}.` },
         },
       },
@@ -622,42 +703,21 @@ function alwaysTools() {
       }),
     },
     {
-      name: 'terra_list_places',
-      title: 'List globe places',
-      description: 'List a bounded page of built-in places and the stable ids accepted by camera, pin, comparison, and measurement tools.',
+      name: 'terra_find_places',
+      title: 'Find globe places',
+      description: `Return the trusted local catalog: all ${PLACES.length} places when query is omitted, or the places whose id, city, country, climate, or note match the query. Ids returned here are accepted by every place parameter.`,
       inputSchema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          offset: { type: 'integer', minimum: 0, maximum: 11, description: 'Zero-based catalog offset. Defaults to 0.' },
-          limit: { type: 'integer', minimum: 1, maximum: 6, description: 'Number of places to return, from 1 to 6. Defaults to 6.' },
+          query: { type: 'string', maxLength: 160, description: 'Optional case-insensitive search text. Omit or leave empty to list every place.' },
         },
       },
       annotations: annotation.read,
-      execute: async ({ offset = 0, limit = 6 }) => ({
-        total: PLACES.length,
-        offset,
-        limit,
-        nextOffset: offset + limit < PLACES.length ? offset + limit : null,
-        places: PLACES.slice(offset, offset + limit).map(({ id, name, country, lat, lon, population, climate, note }) => ({
-          id, name, country, lat, lon, populationMillions: population, climate, note,
-        })),
-      }),
-    },
-    {
-      name: 'terra_search_place',
-      title: 'Search globe places',
-      description: 'Search the built-in catalog by stable id, city, country, climate, or geographic note. Returns only local trusted catalog data.',
-      inputSchema: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['query'],
-        properties: { query: { ...schemas.shortText, description: 'Case-insensitive catalog search text.' } },
-      },
-      annotations: annotation.read,
-      execute: async ({ query }) => {
-        const places = findPlace(query);
-        return { query, count: places.length, places };
+      execute: async ({ query = '' } = {}) => {
+        const needle = query.trim();
+        const places = (needle ? findPlace(needle) : PLACES).map(catalogEntry);
+        return { query: needle, total: PLACES.length, count: places.length, places };
       },
     },
     {
@@ -678,7 +738,7 @@ function alwaysTools() {
     {
       name: 'terra_focus_view',
       title: 'Focus visible panel',
-      description: 'Scroll one visible TERRA panel into the human viewport without changing geographic scene data or publish state.',
+      description: 'Scrolls a visible panel into view; scene data and revision are unchanged.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -691,13 +751,13 @@ function alwaysTools() {
           },
         },
       },
-      annotations: annotation.write,
+      annotations: annotation.read,
       execute: async ({ section }) => {
         state.focus = section;
         render();
         const target = document.querySelector(`[data-focus="${section}"]`);
         target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        return { ok: true, focus: section, visible: Boolean(target && !target.hidden), published: state.scene.published };
+        return { ok: true, focus: section, visible: Boolean(target && !target.hidden), revision: state.scene.revision, published: state.scene.published };
       },
     },
   ];
@@ -718,8 +778,9 @@ async function connectTools() {
   select.innerHTML = tools.map((tool) => `<option value="${tool.name}">${tool.name}</option>`).join('');
   if (tools.some((tool) => tool.name === selected)) select.value = selected;
 
-  await installWebMCP(tools, {
+  await installWebMCP({ always: alwaysTools(), mutation: mutationTools() }, {
     namespace: '__terraWebMCP',
+    published: state.scene.published,
     onStatus: ({ mode, toolCount, message }) => {
       status.dataset.mode = mode;
       status.textContent = `${mode === 'native' ? 'Native WebMCP' : 'Tool Lab'} · ${toolCount} tools${message ? ` · ${message}` : ''}`;
@@ -728,12 +789,11 @@ async function connectTools() {
 }
 
 function replaceScene(nextScene, label) {
-  const history = state.scene.history;
   const revision = state.scene.revision;
   snapshot(label, 'user');
-  const snapshotHistory = state.scene.history;
+  const history = state.scene.history;
   state.scene = hydrateScene(nextScene);
-  state.scene.history = snapshotHistory.length ? snapshotHistory : history;
+  state.scene.history = history;
   state.scene.revision = revision;
 }
 
@@ -742,7 +802,7 @@ function humanFlyTo(placeId, message = 'Human flew to') {
   const place = getPlace(placeId);
   if (!place) return;
   snapshot('human-fly', 'user');
-  state.scene.camera = { placeId: place.id, lat: place.lat, lon: place.lon, altitude: 1 };
+  state.scene.camera = { placeId: place.id, lat: place.lat, lon: place.lon, altitude: state.scene.camera.altitude };
   log(`${message} ${place.name}.`, 'user');
   render();
 }
@@ -760,7 +820,7 @@ function updatePublishSummary() {
   const place = getPlace(state.scene.camera.placeId);
   const summary = document.getElementById('publish-summary');
   summary.innerHTML = [
-    `<p><strong>View:</strong> ${escapeHTML(place?.name ?? `${state.scene.camera.lat.toFixed(2)}°, ${state.scene.camera.lon.toFixed(2)}°`)} at ${String(state.scene.time).padStart(2, '0')}:00</p>`,
+    `<p><strong>View:</strong> ${escapeHTML(place?.name ?? `${state.scene.camera.lat.toFixed(2)}°, ${state.scene.camera.lon.toFixed(2)}°`)} at ${formatHour(state.scene.time)}</p>`,
     `<p><strong>Scene:</strong> ${state.scene.pins.length} pins · ${state.scene.comparisons.length} comparisons · ${state.scene.measurements.length} measurements</p>`,
     `<p><strong>Draft:</strong> ${state.scene.stagedBrief ? escapeHTML(state.scene.stagedBrief.headline) : 'No staged narrative'}</p>`,
     '<p>Publishing freezes this local snapshot and its mutation tools. It does not upload or share data. You can reopen it from the UI later.</p>',
@@ -793,27 +853,29 @@ function bind() {
   });
 
   const timeSlider = document.getElementById('time-slider');
-  let timeSnapshotTaken = false;
-  const beginTimeChange = () => {
-    if (!timeSnapshotTaken && !state.scene.published) {
-      snapshot('human-time', 'user');
-      timeSnapshotTaken = true;
-    }
-  };
-  timeSlider.addEventListener('pointerdown', beginTimeChange);
-  timeSlider.addEventListener('keydown', beginTimeChange);
+  const timeEdit = createEditSession();
   timeSlider.addEventListener('input', (event) => {
     if (state.scene.published) return;
-    state.scene.time = Number(event.target.value);
-    renderGlobe();
+    const next = clamp(Math.round(Number(event.target.value)), 0, 23);
+    if (next === state.scene.time) return;
+    if (timeEdit.begin(state.scene.time)) snapshot('human-time', 'user');
+    state.scene.time = next;
+    scheduleGlobeRender();
   });
-  timeSlider.addEventListener('change', () => {
+  const commitTimeChange = () => {
     if (state.scene.published) return;
-    if (!timeSnapshotTaken) snapshot('human-time', 'user');
-    log(`Human set visualization hour to ${String(state.scene.time).padStart(2, '0')}:00.`, 'user');
-    timeSnapshotTaken = false;
+    const edit = timeEdit.finish(state.scene.time);
+    if (!edit) return;
+    if (!edit.changed) {
+      discardPendingSnapshot('human-time');
+      return;
+    }
+    log(`Human set visualization hour to ${formatHour(state.scene.time)}.`, 'user');
     render();
-  });
+  };
+  timeSlider.addEventListener('change', commitTimeChange);
+  timeSlider.addEventListener('pointerup', commitTimeChange);
+  timeSlider.addEventListener('blur', commitTimeChange);
 
   document.getElementById('example-scene').addEventListener('click', () => {
     if (state.scene.published) return;
@@ -886,11 +948,26 @@ function bind() {
   });
 
   const stage = document.getElementById('globe-stage');
+  const pointers = new Map();
   let drag = null;
+  let pinch = null;
+  const pointerDistance = () => {
+    const [a, b] = [...pointers.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
   stage.addEventListener('pointerdown', (event) => {
-    if (state.scene.published || event.button !== 0 || event.target.closest('.place-dot')) return;
-    globeCanvas.focus({ preventScroll: true });
+    if (state.scene.published || event.target.closest('.place-dot, .globe-hud')) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     stage.setPointerCapture(event.pointerId);
+    if (pointers.size === 2) {
+      drag = null;
+      stage.dataset.dragging = 'false';
+      pinch = { distance: pointerDistance(), altitude: state.scene.camera.altitude, snapshotTaken: false };
+      return;
+    }
+    if (pointers.size > 2) return;
+    globeCanvas.focus({ preventScroll: true });
     drag = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -902,7 +979,21 @@ function bind() {
     stage.dataset.dragging = 'true';
   });
   stage.addEventListener('pointermove', (event) => {
-    if (!drag || drag.pointerId !== event.pointerId || state.scene.published) return;
+    if (!pointers.has(event.pointerId) || state.scene.published) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pinch) {
+      if (pointers.size < 2) return;
+      const distance = pointerDistance();
+      if (!pinch.snapshotTaken && Math.abs(distance - pinch.distance) > 6) {
+        snapshot('human-zoom', 'user');
+        pinch.snapshotTaken = true;
+      }
+      if (!pinch.snapshotTaken || distance < 1) return;
+      state.scene.camera.altitude = clamp(pinch.altitude * (pinch.distance / distance), ALTITUDE_MIN, ALTITUDE_MAX);
+      scheduleGlobeRender();
+      return;
+    }
+    if (!drag || drag.pointerId !== event.pointerId) return;
     const deltaX = event.clientX - drag.startX;
     const deltaY = event.clientY - drag.startY;
     if (!drag.moved && Math.hypot(deltaX, deltaY) > 3) {
@@ -916,9 +1007,21 @@ function bind() {
       lon: normalizeLongitude(drag.lon - deltaX * 0.32),
       lat: clamp(drag.lat + deltaY * 0.24, -85, 85),
     };
-    renderGlobe();
+    scheduleGlobeRender();
   });
-  const finishDrag = (event) => {
+  const finishPointer = (event) => {
+    if (!pointers.has(event.pointerId)) return;
+    pointers.delete(event.pointerId);
+    if (pinch) {
+      if (pointers.size >= 2) return;
+      const changed = pinch.snapshotTaken;
+      pinch = null;
+      if (changed) {
+        log(`Human pinched globe zoom to ${state.scene.camera.altitude.toFixed(2)}×.`, 'user');
+        render();
+      }
+      return;
+    }
     if (!drag || drag.pointerId !== event.pointerId) return;
     const moved = drag.moved;
     drag = null;
@@ -928,20 +1031,43 @@ function bind() {
       render();
     }
   };
-  stage.addEventListener('pointerup', finishDrag);
-  stage.addEventListener('pointercancel', finishDrag);
+  stage.addEventListener('pointerup', finishPointer);
+  stage.addEventListener('pointercancel', finishPointer);
+  // touch-action: pan-y lets the page scroll normally; only an active orbit or pinch claims the gesture.
+  stage.addEventListener('touchmove', (event) => {
+    if (drag?.moved || pinch) event.preventDefault();
+  }, { passive: false });
+
+  const zoomStep = (direction) => {
+    if (state.scene.published) return;
+    const altitude = clamp(state.scene.camera.altitude + direction * 0.08, ALTITUDE_MIN, ALTITUDE_MAX);
+    if (altitude === state.scene.camera.altitude) return;
+    snapshot('human-zoom', 'user');
+    state.scene.camera.altitude = altitude;
+    log(`Human set globe zoom to ${altitude.toFixed(2)}×.`, 'user');
+    render();
+  };
+  document.getElementById('zoom-in').addEventListener('click', () => zoomStep(-1));
+  document.getElementById('zoom-out').addEventListener('click', () => zoomStep(1));
+  document.getElementById('reset-view').addEventListener('click', () => {
+    if (state.scene.published) return;
+    snapshot('human-reset-view', 'user');
+    state.scene.camera = { ...blankScene().camera };
+    log('Human reset the globe view.', 'user');
+    render();
+  });
 
   let zoomTimer = null;
   let zoomSnapshotTaken = false;
   stage.addEventListener('wheel', (event) => {
-    if (state.scene.published || event.target.closest('.place-dot')) return;
+    if (state.scene.published || event.target.closest('.place-dot, .globe-hud')) return;
     event.preventDefault();
     if (!zoomSnapshotTaken) {
       snapshot('human-zoom', 'user');
       zoomSnapshotTaken = true;
     }
-    state.scene.camera.altitude = clamp(state.scene.camera.altitude + Math.sign(event.deltaY) * 0.06, 0.72, 1.55);
-    renderGlobe();
+    state.scene.camera.altitude = clamp(state.scene.camera.altitude + Math.sign(event.deltaY) * 0.06, ALTITUDE_MIN, ALTITUDE_MAX);
+    scheduleGlobeRender();
     globalThis.clearTimeout(zoomTimer);
     zoomTimer = globalThis.setTimeout(() => {
       zoomSnapshotTaken = false;
@@ -958,8 +1084,8 @@ function bind() {
     else if (event.key === 'ArrowRight') camera.lon = normalizeLongitude(camera.lon + 5);
     else if (event.key === 'ArrowUp') camera.lat = clamp(camera.lat + 5, -85, 85);
     else if (event.key === 'ArrowDown') camera.lat = clamp(camera.lat - 5, -85, 85);
-    else if (event.key === '+' || event.key === '=') camera.altitude = clamp(camera.altitude - .08, .72, 1.55);
-    else if (event.key === '-') camera.altitude = clamp(camera.altitude + .08, .72, 1.55);
+    else if (event.key === '+' || event.key === '=') camera.altitude = clamp(camera.altitude - 0.08, ALTITUDE_MIN, ALTITUDE_MAX);
+    else if (event.key === '-') camera.altitude = clamp(camera.altitude + 0.08, ALTITUDE_MIN, ALTITUDE_MAX);
     else handled = false;
     if (!handled) return;
     event.preventDefault();
@@ -969,12 +1095,13 @@ function bind() {
     render();
   });
 
-  let resizeFrame = 0;
-  const stageObserver = new ResizeObserver(() => {
-    cancelAnimationFrame(resizeFrame);
-    resizeFrame = requestAnimationFrame(renderGlobe);
+  // Single ResizeObserver for the stage; the WebGL renderer resizes its drawing buffer inside draw().
+  new ResizeObserver(scheduleGlobeRender).observe(stage);
+
+  globalThis.addEventListener('pagehide', persistNow);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') persistNow();
   });
-  stageObserver.observe(stage);
 
   globalThis.addEventListener('storage', (event) => {
     if (event.key !== STORAGE_KEY || !event.newValue) return;

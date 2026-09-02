@@ -1,4 +1,4 @@
-const VERTEX_SHADER = `
+export const VERTEX_SHADER = `
   attribute vec3 aPosition;
   attribute vec2 aUv;
   uniform float uYaw;
@@ -24,7 +24,7 @@ const VERTEX_SHADER = `
     vUv = aUv;
     vWorldNormal = aPosition;
     vViewNormal = rotateX(rotateY(aPosition, uYaw), uPitch);
-    gl_Position = vec4(vViewNormal.x * uScale.x, vViewNormal.y * uScale.y, vViewNormal.z * 0.45, 1.0);
+    gl_Position = vec4(vViewNormal.x * uScale.x, vViewNormal.y * uScale.y, -vViewNormal.z * 0.45, 1.0);
   }
 `;
 
@@ -138,19 +138,43 @@ export class GlobeRenderer {
     this.canvas = canvas;
     this.scene = null;
     this.failed = false;
+    this.textureUrl = textureUrl;
+    this.onReady = onReady;
+    this.image = null;
     this.gl = canvas.getContext('webgl', {
       alpha: true,
       antialias: true,
-      powerPreference: 'high-performance',
     });
     if (!this.gl) {
-      this.failed = true;
-      canvas.dataset.fallback = 'true';
+      this.markFailed();
       return;
     }
 
+    canvas.addEventListener('webglcontextlost', (event) => {
+      event.preventDefault();
+      this.failed = true;
+      canvas.dataset.fallback = 'true';
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this.failed = false;
+      if (this.createResources()) {
+        delete canvas.dataset.fallback;
+        this.draw();
+      }
+    });
+
+    if (this.createResources()) this.loadTexture();
+  }
+
+  markFailed(error) {
+    if (error) console.warn('WebGL globe unavailable; retaining the CSS fallback.', error);
+    this.failed = true;
+    this.canvas.dataset.fallback = 'true';
+  }
+
+  createResources() {
+    const gl = this.gl;
     try {
-      const gl = this.gl;
       this.program = createProgram(gl);
       const mesh = createSphereMesh();
       this.indexCount = mesh.indices.length;
@@ -167,6 +191,7 @@ export class GlobeRenderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      if (this.image?.complete && this.image.naturalWidth) this.uploadTexture(this.image);
 
       this.locations = {
         position: gl.getAttribLocation(this.program, 'aPosition'),
@@ -179,34 +204,36 @@ export class GlobeRenderer {
         grid: gl.getUniformLocation(this.program, 'uGrid'),
         texture: gl.getUniformLocation(this.program, 'uTexture'),
       };
-
-      this.resizeObserver = new ResizeObserver(() => this.draw());
-      this.resizeObserver.observe(canvas);
-
-      const image = new Image();
-      image.addEventListener('load', () => {
-        gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-        gl.generateMipmap(gl.TEXTURE_2D);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-        this.draw();
-        onReady();
-      });
-      image.addEventListener('error', () => {
-        canvas.dataset.texture = 'unavailable';
-        this.draw();
-      });
-      image.src = textureUrl;
-      canvas.addEventListener('webglcontextlost', (event) => {
-        event.preventDefault();
-        canvas.dataset.fallback = 'true';
-      });
+      return true;
     } catch (error) {
-      console.warn('WebGL globe unavailable; retaining the CSS fallback.', error);
-      this.failed = true;
-      canvas.dataset.fallback = 'true';
+      this.markFailed(error);
+      return false;
     }
+  }
+
+  uploadTexture(image) {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  }
+
+  loadTexture() {
+    const image = new Image();
+    this.image = image;
+    image.addEventListener('load', () => {
+      if (this.failed) return;
+      this.uploadTexture(image);
+      this.draw();
+      this.onReady();
+    });
+    image.addEventListener('error', () => {
+      this.canvas.dataset.texture = 'unavailable';
+      this.draw();
+    });
+    image.src = this.textureUrl;
   }
 
   render(scene) {
@@ -215,7 +242,7 @@ export class GlobeRenderer {
   }
 
   draw() {
-    if (this.failed || !this.scene || !this.gl) return;
+    if (this.failed || !this.scene || !this.gl || this.gl.isContextLost?.()) return;
     const gl = this.gl;
     const rect = this.canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -259,7 +286,6 @@ export class GlobeRenderer {
   }
 
   dispose() {
-    this.resizeObserver?.disconnect();
     if (!this.gl) return;
     this.gl.deleteBuffer(this.vertexBuffer);
     this.gl.deleteBuffer(this.indexBuffer);

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 const root = resolve(process.cwd());
 const destination = resolve(root, 'dist');
+// `.openai/hosting.json` stays at the repository root; ChatGPT Sites reads it from there, not from dist/.
 const files = [
   'index.html',
   'styles.css',
@@ -12,7 +13,6 @@ const files = [
   'SECURITY.md',
   'assets',
   'src',
-  '.openai',
   'public/_headers',
 ];
 
